@@ -527,9 +527,10 @@ class OCRWorker:
                         if result:
                             # Robust check for list of pages vs list of lines
                             # result[0] is the first page's content
-                            # If result[0][0] is a list of length 2, it's likely [bbox, (text, conf)], so it's a page
-                            if (isinstance(result[0], list) and len(result[0]) > 0 and 
-                                isinstance(result[0][0], list) and len(result[0][0]) == 2):
+                            # If result[0][0] is a list/tuple of length 2, it's likely [bbox, (text, conf)], so it's a page
+                            if (isinstance(result, list) and len(result) > 0 and 
+                                isinstance(result[0], list) and len(result[0]) > 0 and
+                                isinstance(result[0][0], (list, tuple)) and len(result[0][0]) == 2):
                                 normalized_pages = result
                             else:
                                 # It's a single page result (list of lines)
@@ -549,21 +550,34 @@ class OCRWorker:
                                 texts = []
                                 scores = []
                                 for line in normalized_pages[0]:
-                                    if isinstance(line, (list, tuple)) and len(line) >= 2:
-                                        raw_info = line[1]
-                                        text = ""
-                                        score = 1.0
-                                        if isinstance(raw_info, dict):
-                                            text = raw_info.get("text", "")
-                                            score = raw_info.get("confidence", 1.0)
-                                        elif isinstance(raw_info, (list, tuple)) and len(raw_info) >= 1:
-                                            text = raw_info[0]
-                                            score = raw_info[1] if len(raw_info) > 1 else 1.0
+                                    if not line: continue
+                                    
+                                    text = None
+                                    score = 1.0
+                                    box = None
+                                    
+                                    if isinstance(line, (list, tuple)):
+                                        if len(line) >= 2:
+                                            box = line[0]
+                                            raw_info = line[1]
+                                            if isinstance(raw_info, dict):
+                                                text = raw_info.get("text")
+                                                score = raw_info.get("confidence", 1.0)
+                                            elif isinstance(raw_info, (list, tuple)) and len(raw_info) >= 1:
+                                                text = raw_info[0]
+                                                score = raw_info[1] if len(raw_info) > 1 else 1.0
+                                        elif len(line) >= 1 and isinstance(line[0], str):
+                                            text = line[0]
+                                            score = line[1] if len(line) > 1 else 1.0
+                                    elif isinstance(line, str):
+                                        text = line
                                         
-                                        if text and isinstance(text, str):
-                                            if not any(x in text for x in ["shape=", "dtype=", "array(", "font="]):
-                                                boxes.append(line[0])
-                                                texts.append(text)
+                                    if text is not None and isinstance(text, str):
+                                        t_clean = text.strip()
+                                        if t_clean and not any(x in t_clean for x in ["shape=", "dtype=", "array(", "font="]):
+                                            if box is not None:
+                                                boxes.append(box)
+                                                texts.append(t_clean)
                                                 scores.append(score)
                                 
                                 # Use draw_ocr for visualization
@@ -571,9 +585,12 @@ class OCRWorker:
                                 if not os.path.exists(font_path):
                                     font_path = None
                                 
-                                im_show = draw_ocr(np.array(pil_image), boxes, texts, scores, font_path=font_path)
-                                im_show = Image.fromarray(im_show)
-                                im_show.save(str(vis_path))
+                                if boxes:
+                                    im_show = draw_ocr(np.array(pil_image), boxes, texts, scores, font_path=font_path)
+                                    im_show = Image.fromarray(im_show)
+                                    im_show.save(str(vis_path))
+                                else:
+                                    pil_image.save(str(vis_path))
                             else:
                                 pil_image.save(str(vis_path))
                         except Exception as ve:
@@ -640,45 +657,46 @@ class OCRWorker:
                 )
 
     def _extract_text(self, result):
-        texts = []
         if not result:
             return ""
         
-        # PaddleOCR result is usually a list of pages, each page is a list of lines
+        texts = []
+        # result is usually a list of pages, but handle direct list of lines too
         if isinstance(result, list) and len(result) > 0:
             if not isinstance(result[0], list):
-                result = [result]
+                pages = [result]
+            else:
+                pages = result
         else:
             return ""
 
-        for page_lines in result:
-            if not page_lines:
+        for page in pages:
+            if not isinstance(page, list):
                 continue
-            for line in page_lines:
-                if not line or not isinstance(line, (list, tuple)):
+            for line in page:
+                if not line:
                     continue
                 
-                text = ""
-                # Standard PaddleOCR line is [bbox, (text, conf)]
-                if len(line) >= 2:
-                    raw_info = line[1]
-                    if isinstance(raw_info, dict):
-                        text = raw_info.get("text", "")
-                    elif isinstance(raw_info, (list, tuple)) and len(raw_info) >= 1:
-                        text = raw_info[0]
-                
-                # Fallback: check if line[0] is text (some versions or other OCR engines)
-                if not text and len(line) >= 1 and isinstance(line[0], str):
-                    text = line[0]
-                
-                # If it's just a string
-                if not text and isinstance(line, str):
+                text = None
+                if isinstance(line, str):
                     text = line
+                elif isinstance(line, (list, tuple)):
+                    # Standard PaddleOCR line is [bbox, (text, conf)]
+                    if len(line) >= 2:
+                        raw_info = line[1]
+                        if isinstance(raw_info, dict):
+                            text = raw_info.get("text")
+                        elif isinstance(raw_info, (list, tuple)) and len(raw_info) >= 1:
+                            text = raw_info[0]
+                    
+                    # Fallback for (text, conf) or [text, conf]
+                    if text is None and len(line) >= 1 and isinstance(line[0], str):
+                        text = line[0]
                 
-                if text and isinstance(text, str):
-                    # Final safety check to avoid leaked object representations
-                    if not any(x in text for x in ["shape=", "dtype=", "array(", "font="]):
-                        texts.append(text.strip())
+                if text is not None:
+                    t = str(text).strip()
+                    if t and not any(x in t for x in ["shape=", "dtype=", "array(", "font="]):
+                        texts.append(t)
         return "\n\n".join(texts)
 
     def _extract_structured(self, result, page_num=None):
@@ -686,40 +704,57 @@ class OCRWorker:
         if not result:
             return structured_output
             
-        # result is list of pages
-        for page_idx, lines in enumerate(result):
+        # Ensure it's a list of pages
+        if isinstance(result, list) and len(result) > 0:
+            if not isinstance(result[0], list):
+                pages = [result]
+            else:
+                pages = result
+        else:
+            return structured_output
+
+        for page_idx, page in enumerate(pages):
             current_page_num = page_num if page_num is not None else page_idx + 1
             page_data = {"page": current_page_num, "blocks": []}
-            if lines and isinstance(lines, list):
-                for word_info in lines:
-                    if not isinstance(word_info, (list, tuple)) or len(word_info) < 2:
+            if isinstance(page, list):
+                for line in page:
+                    if not line:
                         continue
-                    bbox = word_info[0]
-                    raw_info = word_info[1]
-
-                    text = ""
-                    confidence = 1.0
-                    if isinstance(raw_info, dict):
-                        text = raw_info.get("text", "")
-                        confidence = raw_info.get("confidence", 0.0)
-                    elif isinstance(raw_info, (list, tuple)):
-                        text = raw_info[0] if len(raw_info) >= 1 else ""
-                        confidence = raw_info[1] if len(raw_info) >= 2 else 1.0
                     
-                    if text and isinstance(text, str):
-                        # Filter out leaked object representations
-                        if any(x in text for x in ["shape=", "dtype=", "array(", "font="]):
-                            continue
+                    text = None
+                    confidence = 1.0
+                    bbox = None
+                    
+                    if isinstance(line, (list, tuple)):
+                        # Standard PaddleOCR: [bbox, (text, conf)]
+                        if len(line) >= 2 and isinstance(line[0], (list, tuple)):
+                            bbox = line[0]
+                            raw_info = line[1]
+                            if isinstance(raw_info, dict):
+                                text = raw_info.get("text")
+                                confidence = raw_info.get("confidence", 1.0)
+                            elif isinstance(raw_info, (list, tuple)) and len(raw_info) >= 1:
+                                text = raw_info[0]
+                                confidence = raw_info[1] if len(raw_info) > 1 else 1.0
+                        # (text, conf) or [text, conf]
+                        elif len(line) >= 1 and isinstance(line[0], str):
+                            text = line[0]
+                            confidence = line[1] if len(line) > 1 else 1.0
+                    elif isinstance(line, str):
+                        text = line
+                    
+                    if text is not None:
+                        t = str(text).strip()
+                        if t and not any(x in t for x in ["shape=", "dtype=", "array(", "font="]):
+                            # Convert numpy bbox to list for JSON serialization
+                            if bbox is not None and hasattr(bbox, 'tolist'):
+                                bbox = bbox.tolist()
                             
-                        # Convert numpy bbox to list for JSON serialization
-                        if hasattr(bbox, 'tolist'):
-                            bbox = bbox.tolist()
-                        
-                        page_data["blocks"].append({
-                            "text": str(text).strip(),
-                            "confidence": round(float(confidence), 4),
-                            "bbox": bbox
-                        })
+                            page_data["blocks"].append({
+                                "text": t,
+                                "confidence": round(float(confidence), 4),
+                                "bbox": bbox
+                            })
             structured_output.append(page_data)
         return structured_output
 
