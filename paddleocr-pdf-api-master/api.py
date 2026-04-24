@@ -635,27 +635,22 @@ class OCRWorker:
         if not result:
             return ""
         
-        # Handle if result is just a single page result
-        pages = result
-        if isinstance(result, list) and len(result) > 0:
-            if isinstance(result[0], (list, tuple)) and len(result[0]) == 2 and \
-               isinstance(result[0][0], (list, tuple)):
-                pages = [result]
-        
+        # PaddleOCR result is usually a list of results, one per page.
+        # Even if one image is passed, it returns [ [line1, line2, ...] ]
         texts = []
-        for page_lines in pages:
-            if not page_lines or not isinstance(page_lines, list):
+        for page_result in result:
+            if not isinstance(page_result, list):
                 continue
-            for line in page_lines:
-                if not line or not isinstance(line, (list, tuple)) or len(line) < 2:
-                    continue
-                
-                raw_info = line[1]
+            for line in page_result:
                 text = None
-                if isinstance(raw_info, dict):
-                    text = raw_info.get("text")
-                elif isinstance(raw_info, (list, tuple)) and len(raw_info) >= 1:
-                    text = raw_info[0]
+                if isinstance(line, (list, tuple)) and len(line) >= 2:
+                    raw_info = line[1]
+                    if isinstance(raw_info, dict):
+                        text = raw_info.get("text")
+                    elif isinstance(raw_info, (list, tuple)) and len(raw_info) >= 1:
+                        text = raw_info[0]
+                elif isinstance(line, str):
+                    text = line
                 
                 if isinstance(text, str):
                     t = text.strip()
@@ -667,20 +662,14 @@ class OCRWorker:
         if not result:
             return []
             
-        pages = result
-        if isinstance(result, list) and len(result) > 0:
-            if isinstance(result[0], (list, tuple)) and len(result[0]) == 2 and \
-               isinstance(result[0][0], (list, tuple)):
-                pages = [result]
-
         structured_output = []
-        for page_idx, page_lines in enumerate(pages):
+        for page_idx, page_result in enumerate(result):
             current_page_num = page_num if page_num is not None else page_idx + 1
             page_data = {"page": current_page_num, "blocks": []}
             
-            if isinstance(page_lines, list):
-                for line in page_lines:
-                    if not line or not isinstance(line, (list, tuple)) or len(line) < 2:
+            if isinstance(page_result, list):
+                for line in page_result:
+                    if not isinstance(line, (list, tuple)) or len(line) < 2:
                         continue
                     
                     bbox = line[0]
