@@ -549,18 +549,22 @@ class OCRWorker:
                                 texts = []
                                 scores = []
                                 for line in normalized_pages[0]:
-                                    if len(line) >= 2:
-                                        boxes.append(line[0])
+                                    if isinstance(line, (list, tuple)) and len(line) >= 2:
                                         raw_info = line[1]
+                                        text = ""
+                                        score = 1.0
                                         if isinstance(raw_info, dict):
-                                            texts.append(raw_info.get("text", ""))
-                                            scores.append(raw_info.get("confidence", 1.0))
+                                            text = raw_info.get("text", "")
+                                            score = raw_info.get("confidence", 1.0)
                                         elif isinstance(raw_info, (list, tuple)) and len(raw_info) >= 1:
-                                            texts.append(raw_info[0])
-                                            scores.append(raw_info[1] if len(raw_info) > 1 else 1.0)
-                                        else:
-                                            texts.append(str(raw_info))
-                                            scores.append(1.0)
+                                            text = raw_info[0]
+                                            score = raw_info[1] if len(raw_info) > 1 else 1.0
+                                        
+                                        if text and isinstance(text, str):
+                                            if not any(x in text for x in ["shape=", "dtype=", "array(", "font="]):
+                                                boxes.append(line[0])
+                                                texts.append(text)
+                                                scores.append(score)
                                 
                                 # Use draw_ocr for visualization
                                 font_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
@@ -644,35 +648,37 @@ class OCRWorker:
         if isinstance(result, list) and len(result) > 0:
             if not isinstance(result[0], list):
                 result = [result]
+        else:
+            return ""
 
         for page_lines in result:
             if not page_lines:
                 continue
             for line in page_lines:
-                if not line:
+                if not line or not isinstance(line, (list, tuple)):
                     continue
                 
                 text = ""
-                # Case 1: [bbox, (text, conf)] - PaddleOCR standard
-                if isinstance(line, (list, tuple)) and len(line) >= 2 and isinstance(line[0], list):
+                # Standard PaddleOCR line is [bbox, (text, conf)]
+                if len(line) >= 2:
                     raw_info = line[1]
                     if isinstance(raw_info, dict):
                         text = raw_info.get("text", "")
                     elif isinstance(raw_info, (list, tuple)) and len(raw_info) >= 1:
                         text = raw_info[0]
-                    else:
-                        text = str(raw_info)
-                # Case 2: (text, conf)
-                elif isinstance(line, (list, tuple)) and len(line) >= 1 and isinstance(line[0], str):
-                    text = line[0]
-                # Case 3: just text
-                elif isinstance(line, str):
-                    text = line
-                else:
-                    text = str(line)
                 
-                if text:
-                    texts.append(str(text).strip())
+                # Fallback: check if line[0] is text (some versions or other OCR engines)
+                if not text and len(line) >= 1 and isinstance(line[0], str):
+                    text = line[0]
+                
+                # If it's just a string
+                if not text and isinstance(line, str):
+                    text = line
+                
+                if text and isinstance(text, str):
+                    # Final safety check to avoid leaked object representations
+                    if not any(x in text for x in ["shape=", "dtype=", "array(", "font="]):
+                        texts.append(text.strip())
         return "\n\n".join(texts)
 
     def _extract_structured(self, result, page_num=None):
@@ -680,10 +686,11 @@ class OCRWorker:
         if not result:
             return structured_output
             
+        # result is list of pages
         for page_idx, lines in enumerate(result):
             current_page_num = page_num if page_num is not None else page_idx + 1
             page_data = {"page": current_page_num, "blocks": []}
-            if lines:
+            if lines and isinstance(lines, list):
                 for word_info in lines:
                     if not isinstance(word_info, (list, tuple)) or len(word_info) < 2:
                         continue
@@ -698,15 +705,21 @@ class OCRWorker:
                     elif isinstance(raw_info, (list, tuple)):
                         text = raw_info[0] if len(raw_info) >= 1 else ""
                         confidence = raw_info[1] if len(raw_info) >= 2 else 1.0
-                    else:
-                        text = str(raw_info)
-                        confidence = 1.0
-
-                    page_data["blocks"].append({
-                        "text": str(text).strip(),
-                        "confidence": round(float(confidence), 4),
-                        "bbox": bbox
-                    })
+                    
+                    if text and isinstance(text, str):
+                        # Filter out leaked object representations
+                        if any(x in text for x in ["shape=", "dtype=", "array(", "font="]):
+                            continue
+                            
+                        # Convert numpy bbox to list for JSON serialization
+                        if hasattr(bbox, 'tolist'):
+                            bbox = bbox.tolist()
+                        
+                        page_data["blocks"].append({
+                            "text": str(text).strip(),
+                            "confidence": round(float(confidence), 4),
+                            "bbox": bbox
+                        })
             structured_output.append(page_data)
         return structured_output
 
