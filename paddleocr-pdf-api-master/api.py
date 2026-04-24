@@ -519,16 +519,6 @@ class OCRWorker:
                         # Use .ocr() instead of .predict() for better compatibility
                         result = ocr.ocr(tmp_path)
                         
-                        # Logging the result structure for debugging
-                        try:
-                            # Print a truncated version of the result structure to console
-                            result_str = str(result)
-                            if len(result_str) > 1000:
-                                result_str = result_str[:1000] + "..."
-                            print(f"[{job_id[:8]}] PaddleOCR result structure: {result_str}")
-                        except Exception as le:
-                            print(f"[{job_id[:8]}] Logging result failed: {le}")
-                        
                         # Normalize result to list of pages, each page is a list of lines
                         # PaddleOCR.ocr returns [ [[bbox, (text, conf)], ...] ]
                         # If no text is found, it can return [None] or [[]]
@@ -547,6 +537,16 @@ class OCRWorker:
 
                         if not normalized_pages or (len(normalized_pages) == 1 and not normalized_pages[0]):
                              print(f"[{job_id[:8]}] Warning: No text found on page {page_idx + 1}")
+
+                        page_markdown = self._extract_text(normalized_pages)
+                        page_markdown = convert_html_tables(page_markdown)
+                        
+                        # Logging only the extracted text as requested
+                        if page_markdown.strip():
+                            # Print first 1000 chars of extracted text to console
+                            print(f"[{job_id[:8]}] Page {page_idx + 1} extracted text:\n{page_markdown[:1000]}")
+                        else:
+                            print(f"[{job_id[:8]}] Page {page_idx + 1} - No text extracted.")
 
                         # Visualization logic
                         try:
@@ -574,7 +574,8 @@ class OCRWorker:
                                             text = raw_info
                                             score = 1.0
                                             
-                                        if isinstance(text, str) and text.strip():
+                                        # Only add if text is actually a string and not technical info
+                                        if isinstance(text, str) and text.strip() and not any(x in text.lower() for x in ["shape=", "dtype=", "<ndarray", "fonts"]):
                                             boxes.append(line[0])
                                             texts.append(text.strip())
                                             scores.append(float(score))
@@ -592,9 +593,6 @@ class OCRWorker:
                         except Exception as ve:
                             print(f"[{job_id[:8]}] Visualization failed for page {page_idx + 1}: {ve}")
                             pil_image.save(str(vis_path))
-
-                        page_markdown = self._extract_text(normalized_pages)
-                        page_markdown = convert_html_tables(page_markdown)
                         
                         structured_data = self._extract_structured(normalized_pages, page_num=page_idx + 1)
 
@@ -715,10 +713,9 @@ class OCRWorker:
 
                 if isinstance(text, str) and text.strip():
                     text_stripped = text.strip()
-                    # Final safety check against technical strings
-                    if "shape=" in text_stripped and "dtype=" in text_stripped:
-                        continue
-                    if "<NDARRAY" in text_stripped:
+                    # Aggressive check against technical strings
+                    lowered = text_stripped.lower()
+                    if any(x in lowered for x in ["shape=", "dtype=", "<ndarray", "fonts"]):
                         continue
                     texts.append(text_stripped)
         return "\n\n".join(texts)
@@ -784,9 +781,8 @@ class OCRWorker:
                     # Ensure text is string and not technical metadata
                     if isinstance(text, str) and text.strip():
                         text_stripped = text.strip()
-                        if "shape=" in text_stripped and "dtype=" in text_stripped:
-                            continue
-                        if "<NDARRAY" in text_stripped:
+                        lowered = text_stripped.lower()
+                        if any(x in lowered for x in ["shape=", "dtype=", "<ndarray", "fonts"]):
                             continue
                         
                         page_data["blocks"].append({
